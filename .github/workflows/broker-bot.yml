@@ -1,0 +1,62 @@
+name: broker-bot
+
+# Запуск идёт через внешний cron-job.org (каждые 5 минут).
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: broker-bot
+  cancel-in-progress: true
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run bot (single pass)
+        env:
+          # секреты — зашифрованы, не видны никому даже в публичном репозитории
+          KOMMO_TOKEN: ${{ secrets.KOMMO_TOKEN }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          # обычные настройки — задаются в Settings -> Variables
+          KOMMO_SUBDOMAIN: ${{ vars.KOMMO_SUBDOMAIN }}
+          MY_USER_ID: ${{ vars.MY_USER_ID }}
+          DRY_RUN: ${{ vars.DRY_RUN || '1' }}
+        run: python kommo_broker_bot.py --once
+
+      - name: Save state back to repo
+        run: |
+          git config user.name "broker-bot"
+          git config user.email "actions@users.noreply.github.com"
+          if [ -z "$(git status --porcelain broker_bot_state.json)" ]; then
+            echo "Нет изменений в state-файле"
+            exit 0
+          fi
+          git add broker_bot_state.json
+          git commit -m "state update [skip ci]"
+          for i in 1 2 3 4 5; do
+            if git push; then
+              echo "state запушен с попытки $i"
+              exit 0
+            fi
+            echo "push отклонён, подтягиваю свежий main (попытка $i)"
+            git pull --rebase --autostash origin main || true
+            sleep 3
+          done
+          echo "не удалось запушить state за 5 попыток — следующий проход исправит"
+          exit 0
